@@ -7952,7 +7952,7 @@
       }
     };
     var body = {
-      selector: 'body',
+      selector: 'body, :host',
       styles: {
         dragging: "\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n        user-select: none;\n        -webkit-user-select: none;\n        -moz-user-select: none;\n        -ms-user-select: none;\n        overflow-anchor: none;\n      "
       }
@@ -7969,10 +7969,10 @@
 
   var useIsomorphicLayoutEffect$1 = typeof window !== 'undefined' && typeof window.document !== 'undefined' && typeof window.document.createElement !== 'undefined' ? React.useLayoutEffect : React.useEffect;
 
-  var getHead = function getHead() {
-    var head = document.querySelector('head');
-    !head ?  invariant(false, 'Cannot find the head to append a style to')  : void 0;
-    return head;
+  var getStylesRoot = function getStylesRoot(stylesInsertionPoint) {
+    var stylesRoot = stylesInsertionPoint || document.querySelector('head');
+    !stylesRoot ?  invariant(false, 'Cannot find the head or root to append a style to')  : void 0;
+    return stylesRoot;
   };
 
   var createStyleEl = function createStyleEl(nonce) {
@@ -7986,7 +7986,7 @@
     return el;
   };
 
-  function useStyleMarshal(contextId, nonce) {
+  function useStyleMarshal(contextId, nonce, stylesInsertionPoint) {
     var styles = useMemo(function () {
       return getStyles$1(contextId);
     }, [contextId]);
@@ -8010,22 +8010,23 @@
       dynamicRef.current = dynamic;
       always.setAttribute(prefix$2 + "-always", contextId);
       dynamic.setAttribute(prefix$2 + "-dynamic", contextId);
-      getHead().appendChild(always);
-      getHead().appendChild(dynamic);
+      var stylesRoot = getStylesRoot(stylesInsertionPoint);
+      stylesRoot.appendChild(always);
+      stylesRoot.appendChild(dynamic);
       setAlwaysStyle(styles.always);
       setDynamicStyle(styles.resting);
       return function () {
         var remove = function remove(ref) {
           var current = ref.current;
           !current ?  invariant(false, 'Cannot unmount ref as it is not set')  : void 0;
-          getHead().removeChild(current);
+          stylesRoot.removeChild(current);
           ref.current = null;
         };
 
         remove(alwaysRef);
         remove(dynamicRef);
       };
-    }, [nonce, setAlwaysStyle, setDynamicStyle, styles.always, styles.resting, contextId]);
+    }, [nonce, setAlwaysStyle, setDynamicStyle, styles.always, styles.resting, contextId, stylesInsertionPoint]);
     var dragging = useCallback(function () {
       return setDynamicStyle(styles.dragging);
     }, [setDynamicStyle, styles.dragging]);
@@ -8054,6 +8055,28 @@
     return marshal;
   }
 
+  function getEventTarget(event) {
+    var target = event.composedPath && event.composedPath()[0];
+    return target || event.target;
+  }
+  function getEventTargetRoot(event) {
+    var source = event && event.composedPath && event.composedPath()[0];
+    var root = source && source.getRootNode();
+    return root || document;
+  }
+  function queryElements(ref, selector, filterFn) {
+    var rootNode = ref && ref.getRootNode();
+    var documentOrShadowRoot = rootNode && rootNode.querySelectorAll ? rootNode : document;
+    var possible = toArray(documentOrShadowRoot.querySelectorAll(selector));
+    var filtered = find(possible, filterFn);
+
+    if (!filtered && documentOrShadowRoot.host) {
+      return queryElements(documentOrShadowRoot.host, selector, filterFn);
+    }
+
+    return filtered;
+  }
+
   var getWindowFromEl = (function (el) {
     return el && el.ownerDocument ? el.ownerDocument.defaultView : window;
   });
@@ -8062,16 +8085,9 @@
     return el instanceof getWindowFromEl(el).HTMLElement;
   }
 
-  function findDragHandle(contextId, draggableId) {
+  function findDragHandle(contextId, draggableId, ref) {
     var selector = "[" + dragHandle.contextId + "=\"" + contextId + "\"]";
-    var possible = toArray(document.querySelectorAll(selector));
-
-    if (!possible.length) {
-       warning("Unable to find any drag handles in the context \"" + contextId + "\"") ;
-      return null;
-    }
-
-    var handle = find(possible, function (el) {
+    var handle = queryElements(ref, selector, function (el) {
       return el.getAttribute(dragHandle.draggableId) === draggableId;
     });
 
@@ -9374,7 +9390,7 @@
   }
 
   function isEventInInteractiveElement(draggable, event) {
-    var target = event.target;
+    var target = getEventTarget(event);
 
     if (!isHtmlElement(target)) {
       return false;
@@ -9417,7 +9433,7 @@
     return closestPonyfill(el.parentElement, selector);
   }
 
-  function closest$1(el, selector) {
+  function closestImpl(el, selector) {
     if (el.closest) {
       return el.closest(selector);
     }
@@ -9425,12 +9441,27 @@
     return closestPonyfill(el, selector);
   }
 
+  function closest$1(el, selector) {
+    if (!el || el === document || el === window) {
+      return null;
+    }
+
+    var found = closestImpl(el, selector);
+
+    if (found) {
+      return found;
+    }
+
+    var root = el.getRootNode();
+    return closest$1(root.host, selector);
+  }
+
   function getSelector(contextId) {
     return "[" + dragHandle.contextId + "=\"" + contextId + "\"]";
   }
 
   function findClosestDragHandleFromEvent(contextId, event) {
-    var target = event.target;
+    var target = getEventTarget(event);
 
     if (!isElement(target)) {
        warning('event.target must be a Element') ;
@@ -9462,10 +9493,9 @@
     return handle.getAttribute(dragHandle.draggableId);
   }
 
-  function findDraggable(contextId, draggableId) {
+  function findDraggable(contextId, draggableId, ref) {
     var selector = "[" + draggable.contextId + "=\"" + contextId + "\"]";
-    var possible = toArray(document.querySelectorAll(selector));
-    var draggable$1 = find(possible, function (el) {
+    var draggable$1 = queryElements(ref, selector, function (el) {
       return el.getAttribute(draggable.id) === draggableId;
     });
 
@@ -9558,7 +9588,7 @@
     }
 
     var entry = registry.draggable.getById(draggableId);
-    var el = findDraggable(contextId, entry.descriptor.id);
+    var el = findDraggable(contextId, entry.descriptor.id, getEventTargetRoot(sourceEvent));
 
     if (!el) {
        warning("Unable to find draggable element with id: " + draggableId) ;
@@ -9851,7 +9881,7 @@
       contextId: contextId,
       text: dragHandleUsageInstructions
     });
-    var styleMarshal = useStyleMarshal(contextId, nonce);
+    var styleMarshal = useStyleMarshal(contextId, nonce, props.stylesInsertionPoint);
     var lazyDispatch = useCallback(function (action) {
       getStore(lazyStoreRef).dispatch(action);
     }, []);
@@ -9978,7 +10008,8 @@
         onBeforeDragStart: props.onBeforeDragStart,
         onDragStart: props.onDragStart,
         onDragUpdate: props.onDragUpdate,
-        onDragEnd: props.onDragEnd
+        onDragEnd: props.onDragEnd,
+        stylesInsertionPoint: props.stylesInsertionPoint
       }, props.children);
     });
   }
@@ -10845,7 +10876,7 @@
       checkIsValidInnerRef(getRef());
 
       if (props.isEnabled) {
-        !findDragHandle(contextId, id) ? "development" !== "production" ? invariant(false, prefix(id) + " Unable to find drag handle") : invariant(false) : void 0;
+        !findDragHandle(contextId, id, getRef()) ? "development" !== "production" ? invariant(false, prefix(id) + " Unable to find drag handle") : invariant(false) : void 0;
       }
     });
   }

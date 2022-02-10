@@ -4948,7 +4948,7 @@ var getStyles$1 = (function (contextId) {
     }
   };
   var body = {
-    selector: 'body',
+    selector: 'body, :host',
     styles: {
       dragging: "\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n        user-select: none;\n        -webkit-user-select: none;\n        -moz-user-select: none;\n        -ms-user-select: none;\n        overflow-anchor: none;\n      "
     }
@@ -4965,10 +4965,10 @@ var getStyles$1 = (function (contextId) {
 
 var useIsomorphicLayoutEffect = typeof window !== 'undefined' && typeof window.document !== 'undefined' && typeof window.document.createElement !== 'undefined' ? useLayoutEffect : useEffect;
 
-var getHead = function getHead() {
-  var head = document.querySelector('head');
-  !head ? process.env.NODE_ENV !== "production" ? invariant(false, 'Cannot find the head to append a style to') : invariant(false) : void 0;
-  return head;
+var getStylesRoot = function getStylesRoot(stylesInsertionPoint) {
+  var stylesRoot = stylesInsertionPoint || document.querySelector('head');
+  !stylesRoot ? process.env.NODE_ENV !== "production" ? invariant(false, 'Cannot find the head or root to append a style to') : invariant(false) : void 0;
+  return stylesRoot;
 };
 
 var createStyleEl = function createStyleEl(nonce) {
@@ -4982,7 +4982,7 @@ var createStyleEl = function createStyleEl(nonce) {
   return el;
 };
 
-function useStyleMarshal(contextId, nonce) {
+function useStyleMarshal(contextId, nonce, stylesInsertionPoint) {
   var styles = useMemo(function () {
     return getStyles$1(contextId);
   }, [contextId]);
@@ -5006,22 +5006,23 @@ function useStyleMarshal(contextId, nonce) {
     dynamicRef.current = dynamic;
     always.setAttribute(prefix$1 + "-always", contextId);
     dynamic.setAttribute(prefix$1 + "-dynamic", contextId);
-    getHead().appendChild(always);
-    getHead().appendChild(dynamic);
+    var stylesRoot = getStylesRoot(stylesInsertionPoint);
+    stylesRoot.appendChild(always);
+    stylesRoot.appendChild(dynamic);
     setAlwaysStyle(styles.always);
     setDynamicStyle(styles.resting);
     return function () {
       var remove = function remove(ref) {
         var current = ref.current;
         !current ? process.env.NODE_ENV !== "production" ? invariant(false, 'Cannot unmount ref as it is not set') : invariant(false) : void 0;
-        getHead().removeChild(current);
+        stylesRoot.removeChild(current);
         ref.current = null;
       };
 
       remove(alwaysRef);
       remove(dynamicRef);
     };
-  }, [nonce, setAlwaysStyle, setDynamicStyle, styles.always, styles.resting, contextId]);
+  }, [nonce, setAlwaysStyle, setDynamicStyle, styles.always, styles.resting, contextId, stylesInsertionPoint]);
   var dragging = useCallback(function () {
     return setDynamicStyle(styles.dragging);
   }, [setDynamicStyle, styles.dragging]);
@@ -5050,6 +5051,28 @@ function useStyleMarshal(contextId, nonce) {
   return marshal;
 }
 
+function getEventTarget(event) {
+  var target = event.composedPath && event.composedPath()[0];
+  return target || event.target;
+}
+function getEventTargetRoot(event) {
+  var source = event && event.composedPath && event.composedPath()[0];
+  var root = source && source.getRootNode();
+  return root || document;
+}
+function queryElements(ref, selector, filterFn) {
+  var rootNode = ref && ref.getRootNode();
+  var documentOrShadowRoot = rootNode && rootNode.querySelectorAll ? rootNode : document;
+  var possible = toArray(documentOrShadowRoot.querySelectorAll(selector));
+  var filtered = find(possible, filterFn);
+
+  if (!filtered && documentOrShadowRoot.host) {
+    return queryElements(documentOrShadowRoot.host, selector, filterFn);
+  }
+
+  return filtered;
+}
+
 var getWindowFromEl = (function (el) {
   return el && el.ownerDocument ? el.ownerDocument.defaultView : window;
 });
@@ -5058,16 +5081,9 @@ function isHtmlElement(el) {
   return el instanceof getWindowFromEl(el).HTMLElement;
 }
 
-function findDragHandle(contextId, draggableId) {
+function findDragHandle(contextId, draggableId, ref) {
   var selector = "[" + dragHandle.contextId + "=\"" + contextId + "\"]";
-  var possible = toArray(document.querySelectorAll(selector));
-
-  if (!possible.length) {
-    process.env.NODE_ENV !== "production" ? warning("Unable to find any drag handles in the context \"" + contextId + "\"") : void 0;
-    return null;
-  }
-
-  var handle = find(possible, function (el) {
+  var handle = queryElements(ref, selector, function (el) {
     return el.getAttribute(dragHandle.draggableId) === draggableId;
   });
 
@@ -6370,7 +6386,7 @@ function isAnInteractiveElement(parent, current) {
 }
 
 function isEventInInteractiveElement(draggable, event) {
-  var target = event.target;
+  var target = getEventTarget(event);
 
   if (!isHtmlElement(target)) {
     return false;
@@ -6413,7 +6429,7 @@ function closestPonyfill(el, selector) {
   return closestPonyfill(el.parentElement, selector);
 }
 
-function closest$1(el, selector) {
+function closestImpl(el, selector) {
   if (el.closest) {
     return el.closest(selector);
   }
@@ -6421,12 +6437,27 @@ function closest$1(el, selector) {
   return closestPonyfill(el, selector);
 }
 
+function closest$1(el, selector) {
+  if (!el || el === document || el === window) {
+    return null;
+  }
+
+  var found = closestImpl(el, selector);
+
+  if (found) {
+    return found;
+  }
+
+  var root = el.getRootNode();
+  return closest$1(root.host, selector);
+}
+
 function getSelector(contextId) {
   return "[" + dragHandle.contextId + "=\"" + contextId + "\"]";
 }
 
 function findClosestDragHandleFromEvent(contextId, event) {
-  var target = event.target;
+  var target = getEventTarget(event);
 
   if (!isElement(target)) {
     process.env.NODE_ENV !== "production" ? warning('event.target must be a Element') : void 0;
@@ -6458,10 +6489,9 @@ function tryGetClosestDraggableIdFromEvent(contextId, event) {
   return handle.getAttribute(dragHandle.draggableId);
 }
 
-function findDraggable(contextId, draggableId) {
+function findDraggable(contextId, draggableId, ref) {
   var selector = "[" + draggable.contextId + "=\"" + contextId + "\"]";
-  var possible = toArray(document.querySelectorAll(selector));
-  var draggable$1 = find(possible, function (el) {
+  var draggable$1 = queryElements(ref, selector, function (el) {
     return el.getAttribute(draggable.id) === draggableId;
   });
 
@@ -6554,7 +6584,7 @@ function tryStart(_ref3) {
   }
 
   var entry = registry.draggable.getById(draggableId);
-  var el = findDraggable(contextId, entry.descriptor.id);
+  var el = findDraggable(contextId, entry.descriptor.id, getEventTargetRoot(sourceEvent));
 
   if (!el) {
     process.env.NODE_ENV !== "production" ? warning("Unable to find draggable element with id: " + draggableId) : void 0;
@@ -6847,7 +6877,7 @@ function App(props) {
     contextId: contextId,
     text: dragHandleUsageInstructions
   });
-  var styleMarshal = useStyleMarshal(contextId, nonce);
+  var styleMarshal = useStyleMarshal(contextId, nonce, props.stylesInsertionPoint);
   var lazyDispatch = useCallback(function (action) {
     getStore(lazyStoreRef).dispatch(action);
   }, []);
@@ -6974,7 +7004,8 @@ function DragDropContext(props) {
       onBeforeDragStart: props.onBeforeDragStart,
       onDragStart: props.onDragStart,
       onDragUpdate: props.onDragUpdate,
-      onDragEnd: props.onDragEnd
+      onDragEnd: props.onDragEnd,
+      stylesInsertionPoint: props.stylesInsertionPoint
     }, props.children);
   });
 }
@@ -7844,7 +7875,7 @@ function useValidation$1(props, contextId, getRef) {
     checkIsValidInnerRef(getRef());
 
     if (props.isEnabled) {
-      !findDragHandle(contextId, id) ? process.env.NODE_ENV !== "production" ? invariant(false, prefix(id) + " Unable to find drag handle") : invariant(false) : void 0;
+      !findDragHandle(contextId, id, getRef()) ? process.env.NODE_ENV !== "production" ? invariant(false, prefix(id) + " Unable to find drag handle") : invariant(false) : void 0;
     }
   });
 }
